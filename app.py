@@ -1,20 +1,40 @@
 import os
 import sys
 import datetime
-import openai
-import dotenv
+import google.generativeai as genai
+from dotenv import load_dotenv
 import streamlit as st
+import tempfile
 
 from audio_recorder_streamlit import audio_recorder
 
-# import API key from .env file
-dotenv.load_dotenv()
-openai.api_key = os.getenv("OPENAI_API_KEY")
+load_dotenv()
+
+# Configure Google API for audio processing
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+genai.configure(api_key=GOOGLE_API_KEY)
+
 
 
 def transcribe(audio_file):
-    transcript = openai.Audio.transcribe("whisper-1", audio_file)
-    return transcript
+    model = genai.GenerativeModel("models/gemini-1.5-pro-latest")
+    audio_file = genai.upload_file(path=audio_file)
+    user_prompt = """
+    Can you transcribe this interview, in the format of timecode, speaker, caption.
+    Use speaker A, speaker B, etc. to identify speakers.
+    """
+    response = model.generate_content(
+        [
+            user_prompt,
+            audio_file
+        ]
+    )
+    return response.text
+
+
+# def transcribe(audio_file):
+#     transcript = openai.Audio.transcribe("whisper-1", audio_file)
+#     return transcript
 
 
 def save_audio_file(audio_bytes, file_extension):
@@ -33,6 +53,15 @@ def save_audio_file(audio_bytes, file_extension):
 
     return file_name
 
+def save_uploaded_file(uploaded_file):
+    """Save uploaded file to a temporary file and return the path."""
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.' + uploaded_file.name.split('.')[-1]) as tmp_file:
+            tmp_file.write(uploaded_file.getvalue())
+            return tmp_file.name
+    except Exception as e:
+        st.error(f"Error handling uploaded file: {e}")
+        return None
 
 def transcribe_audio(file_path):
     """
@@ -57,10 +86,11 @@ def main():
 
     # Record Audio tab
     with tab1:
-        audio_bytes = audio_recorder()
+        audio_bytes = audio_recorder(pause_threshold=3.0,auto_start=True)
         if audio_bytes:
             st.audio(audio_bytes, format="audio/wav")
-            save_audio_file(audio_bytes, "mp3")
+            audio_path = save_audio_file(audio_bytes, "mp3")
+            
 
     # Upload Audio tab
     with tab2:
@@ -68,18 +98,14 @@ def main():
         if audio_file:
             file_extension = audio_file.type.split('/')[1]
             save_audio_file(audio_file.read(), file_extension)
+            audio_path = save_uploaded_file(audio_file)
+            st.audio(audio_path)
 
     # Transcribe button action
     if st.button("Transcribe"):
-        # Find the newest audio file
-        audio_file_path = max(
-            [f for f in os.listdir(".") if f.startswith("audio")],
-            key=os.path.getctime,
-        )
-
-        # Transcribe the audio file
-        transcript_text = transcribe_audio(audio_file_path)
-
+        with st.spinner('Processing...'):
+            transcript_text = transcribe(audio_path)
+            st.text_area("Processed Output", transcript_text, height=300)
         # Display the transcript
         st.header("Transcript")
         st.write(transcript_text)
