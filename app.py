@@ -19,10 +19,15 @@ genai.configure(api_key=GOOGLE_API_KEY)
 def transcribe(audio_file):
     model = genai.GenerativeModel("models/gemini-1.5-pro-latest")
     audio_file = genai.upload_file(path=audio_file)
-    user_prompt = """
-    Can you transcribe this interview, in the format of timecode, speaker, caption.
-    Use speaker A, speaker B, etc. to identify speakers.
-    """
+    if st.session_state.transcript_text == "":
+        user_prompt = """Can you transcribe this interview, in the format of timecode, speaker, caption.
+        Use speaker A, speaker B, etc. to identify speakers."""
+
+    else:
+        user_prompt = """Accounting for the existing conversation provided here:\n\n""" + st.session_state.transcript_text + """\n\n
+        Can you transcribe this interview, in the format of timecode, speaker, caption.
+        Use speaker A, speaker B, etc. to identify speakers.
+        """
     response = model.generate_content(
         [
             user_prompt,
@@ -75,6 +80,8 @@ def transcribe_audio(file_path):
 
     return transcript["text"]
 
+if 'transcript_text' not in st.session_state:
+    st.session_state.transcript_text = ""
 
 def main():
     """
@@ -83,14 +90,15 @@ def main():
     st.title("Whisper Transcription")
 
     tab1, tab2 = st.tabs(["Record Audio", "Upload Audio"])
-
     # Record Audio tab
     with tab1:
         audio_bytes = audio_recorder(pause_threshold=3.0,auto_start=True)
         if audio_bytes:
             st.audio(audio_bytes, format="audio/wav")
             audio_path = save_audio_file(audio_bytes, "mp3")
-            
+            #automatically transcribe
+            st.session_state.transcript_text = st.session_state.transcript_text + transcribe(audio_path)
+            st.text_area("Processed Output", st.session_state.transcript_text, height=300)
 
     # Upload Audio tab
     with tab2:

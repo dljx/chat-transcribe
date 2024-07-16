@@ -1,6 +1,5 @@
-streamlit
+streamlit==1.29.0
 audio-recorder-streamlit
-openai==0.28
 python-dotenv
 google-generativeai
 vertexai
