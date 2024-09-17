@@ -16,8 +16,8 @@ Follow these steps to install and run the application:
 
 1. Clone the repository
 
-        git clone https://github.com/your-repo-url/streamlit-whisper-transcription.git
-        cd streamlit-whisper-transcription
+        git clone https://github.com/your-repo-url/chat-transcribe.git
+        cd chat-transcribe
 
 2. Create a virtual environment and install dependencies
 
@@ -42,19 +42,19 @@ Open your web browser and navigate to http://localhost:8501 to access the applic
 
 Build the Docker image:
 
-    docker build -t streamlit-whisper-transcription .
+    docker build -t chat-transcribe .
 
 Run the Docker image:
 
-    docker run -p 8501:8501 streamlit-whisper-transcription
+    docker run -p 8501:8501 chat-transcribe
 
 Open your web browser and navigate to http://localhost:8501 to access the application.
 
 ## Limitations and Disclaimer
 
-This app is a demonstration of the potential of OpenAI's Whisper ASR system for audio transcription. The accuracy of the
+This app is a demonstration of the potential of Google's Gemini Multimodal model for audio transcription. The accuracy of the
 transcriptions depends on various factors such as the quality of the audio file, the language spoken, and background
-noise. The app is not intended for use in production environments and should be used for demonstration purposes only.
+noise and chunking size. The app is not intended for use in production environments and should be used for demonstration purposes only.
 
 ## Contributing
 
