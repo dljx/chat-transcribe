@@ -71,7 +71,7 @@ def transcribe_chunk(audio_uri):
         audio_part = Part.from_uri(audio_uri, mime_type="audio/wav")
 
         if not st.session_state.transcript_text:
-            user_prompt = """You are a transcriber for DBS Bank customer service transcribing audio chunks.
+            user_prompt = """You are a transcriber transcribing audio chunks.
             Pay close attention to the very beginning of the audio chunk to ensure that no words or sounds are transcribed wrongly, even if they are brief. Fill up the transcription gap as best as you can.
             Accuracy is crucial, especially at the beginning of the audio chunk. Please ensure that the transcription is complete and precise. 
             Transcribe this audio and give the output directly with correct punctuation.
