@@ -1,7 +1,6 @@
 # Near-Realtime Transcription with Gemini and Streamlit
 
-This project demonstrates how to perform near-realtime audio transcription using Google AI's Gemini model and Streamlit for a user-friendly web interface. It's designed for DBS Bank customer service use cases. 
-
+This project demonstrates how to perform near-realtime audio transcription using Google AI's Gemini model and Streamlit for a user-friendly web interface.
 ## Features
 
 * **Near-realtime transcription:** Transcribes audio from the user's microphone in near real-time using Gemini's powerful speech-to-text capabilities.
