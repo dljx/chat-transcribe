@@ -1,135 +1,205 @@
+
 import os
-import sys
-import datetime
-import google.generativeai as genai
-from dotenv import load_dotenv
-import streamlit as st
+import time
 import tempfile
+import threading
+import queue
+import logging
+import io
+import asyncio
+import vertexai
+import streamlit as st
+from streamlit_webrtc import webrtc_streamer, WebRtcMode, RTCConfiguration
+from google.cloud import storage
+from vertexai.generative_models import GenerativeModel, Part
+from pydub import AudioSegment
+import numpy as np
+import datetime
 
-from audio_recorder_streamlit import audio_recorder
+vertexai.init(project="[PROJECT_ID]", location="asia-southeast1")  # Replace with your project and location
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+)
+logger = logging.getLogger(__name__)
 
-load_dotenv()
+# Load environment variables (replace with your actual values)
+GCS_BUCKET_NAME = "[BUCKET_NAME]"  # Replace with your bucket name
 
-# Configure Google API for audio processing
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
-genai.configure(api_key=GOOGLE_API_KEY)
+# Configure Gemini
+GEMINI_MODEL_ID = "gemini-1.5-pro-001"  # Replace with the appropriate model ID
+gemini_model = GenerativeModel(GEMINI_MODEL_ID)
 
+# Configure Google Cloud Storage
+storage_client = storage.Client()
+bucket = storage_client.bucket(GCS_BUCKET_NAME)
 
+# Configuration
+CHUNK_DURATION = 8 # seconds
 
-def transcribe(audio_file):
-    model = genai.GenerativeModel("models/gemini-1.5-pro-latest")
-    audio_file = genai.upload_file(path=audio_file)
-    if st.session_state.transcript_text == "":
-        user_prompt = """Can you transcribe this interview, in the format of timecode, speaker, caption.
-        Use speaker A, speaker B, etc. to identify speakers."""
+# Global variables
+audio_queue = queue.Queue()
+transcript = ""
+transcribing_lock = threading.Lock()
+recording = False  # Flag to indicate recording status
+full_audio = AudioSegment.empty()  # Store the complete audio recording
 
-    else:
-        user_prompt = """Accounting for the existing conversation provided here:\n\n""" + st.session_state.transcript_text + """\n\n
-        Can you transcribe this interview, in the format of timecode, speaker, caption.
-        Use speaker A, speaker B, etc. to identify speakers.
-        """
-    response = model.generate_content(
-        [
-            user_prompt,
-            audio_file
-        ]
-    )
-    return response.text
+# Simplified ICE server configuration (using Google's STUN server)
+RTC_CONFIGURATION = RTCConfiguration(
+    iceServers=[{"urls": ["stun:stun.l.google.com:19302"]}]
+)
 
+# Callback queue for updating the transcript from the worker thread
+callback_queue = queue.Queue()
 
-# def transcribe(audio_file):
-#     transcript = openai.Audio.transcribe("whisper-1", audio_file)
-#     return transcript
-
-
-def save_audio_file(audio_bytes, file_extension):
-    """
-    Save audio bytes to a file with the specified extension.
-
-    :param audio_bytes: Audio data in bytes
-    :param file_extension: The extension of the output audio file
-    :return: The name of the saved audio file
-    """
+def upload_chunk_to_gcs(audio_bytes):
+    """Uploads audio chunk to GCS and returns URI."""
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    file_name = f"audio_{timestamp}.{file_extension}"
+    blob_name = f"audio_chunk_{timestamp}.wav"
+    blob = bucket.blob(blob_name)
+    blob.upload_from_string(audio_bytes, content_type="audio/wav")
+    gcs_uri = f"gs://{GCS_BUCKET_NAME}/{blob_name}"
+    logger.info(f"Uploaded audio chunk to GCS: {gcs_uri}")
+    return gcs_uri
 
-    with open(file_name, "wb") as f:
-        f.write(audio_bytes)
 
-    return file_name
-
-def save_uploaded_file(uploaded_file):
-    """Save uploaded file to a temporary file and return the path."""
+def transcribe_chunk(audio_uri):
+    """Transcribes audio chunk using Gemini."""
+    global transcript
     try:
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.' + uploaded_file.name.split('.')[-1]) as tmp_file:
-            tmp_file.write(uploaded_file.getvalue())
-            return tmp_file.name
+        audio_part = Part.from_uri(audio_uri, mime_type="audio/wav")
+
+        if not st.session_state.transcript_text:
+            user_prompt = """You are a transcriber for DBS Bank customer service transcribing audio chunks.
+            Pay close attention to the very beginning of the audio chunk to ensure that no words or sounds are transcribed wrongly, even if they are brief. Fill up the transcription gap as best as you can.
+            Accuracy is crucial, especially at the beginning of the audio chunk. Please ensure that the transcription is complete and precise. 
+            Transcribe this audio and give the output directly with correct punctuation.
+            Join partial sentences from previous chunks for context.
+            """
+        else:
+            user_prompt = f"""Accounting for the existing conversation:\n\n{st.session_state.transcript_text}\n\n
+            Pay close attention to the very beginning of the audio chunk to ensure that no words or sounds are transcribed wrongly, even if they are brief. Fill up the transcription gap as best as you can.
+            Accuracy is crucial, especially at the beginning of the audio chunk. Please ensure that the transcription is complete and precise. 
+            Transcribe this audio and give the output directly with correct punctuation.
+            Join partial sentences from previous chunks for context.
+
+            If the audio does not contain any pronounced words, just return an empty output, not even '<noise>'.
+            """
+
+
+
+        text_part = Part.from_text(user_prompt)
+        response = gemini_model.generate_content([text_part, audio_part])
+        transcribed_text = response.text
+        logger.info(f"Gemini Transcription: {transcribed_text}")
+
+        with transcribing_lock:
+            transcript += transcribed_text
+            st.session_state.transcript_text = transcript  # Update session state
     except Exception as e:
-        st.error(f"Error handling uploaded file: {e}")
-        return None
+        logger.error(f"Error transcribing chunk with Gemini: {e}")
 
-def transcribe_audio(file_path):
-    """
-    Transcribe the audio file at the specified path.
 
-    :param file_path: The path of the audio file to transcribe
-    :return: The transcribed text
-    """
-    with open(file_path, "rb") as audio_file:
-        transcript = transcribe(audio_file)
+async def audio_callback(frames):
+    """WebRTC audio frames callback."""
+    global full_audio, recording
 
-    return transcript["text"]
+    if recording:
+        audio_queue.put(frames)
+        for frame in frames:
+            full_audio += AudioSegment(
+                data=frame.to_ndarray().tobytes(),
+                sample_width=frame.format.bytes,
+                frame_rate=frame.sample_rate,
+                channels=len(frame.layout.channels),
+            )
+    return frames
 
-if 'transcript_text' not in st.session_state:
-    st.session_state.transcript_text = ""
+
+def transcribe_worker():
+    """Worker thread to process audio chunks."""
+    global full_audio, recording
+    last_chunk_time = time.time()
+    while recording:
+        try:
+            # Check if enough time has passed for a new chunk
+            if time.time() - last_chunk_time >= CHUNK_DURATION:
+                # Check if there's enough audio data for a chunk
+                if len(full_audio) >= CHUNK_DURATION * 1000:
+                    # Extract chunk from full audio
+                    chunk = full_audio[: CHUNK_DURATION * 1000]
+                    full_audio = full_audio[CHUNK_DURATION * 1000:]
+
+                    # Resample and convert to mono
+                    chunk = chunk.set_frame_rate(16000).set_channels(1)
+                    audio_bytes = chunk.export(format="wav").read()
+
+                    audio_uri = upload_chunk_to_gcs(audio_bytes)
+
+                    # Add the audio URI to the callback queue
+                    callback_queue.put(audio_uri)
+
+                    last_chunk_time = time.time()
+            time.sleep(0.1)
+        except Exception as e:
+            logger.error(f"Error in transcribe_worker: {e}")
+
+
+def process_callback_queue():
+    """Processes items in the callback queue in the main thread."""
+    global transcript, i  # Access global variables
+
+    while True:
+        try:
+            item = callback_queue.get_nowait()  # Get item without blocking
+            if item is not None:
+                transcribe_chunk(item)  # Call transcribe_chunk in the main thread
+
+                # Update the transcript output with the full transcript
+                with transcribing_lock:
+                    transcript_output.text_area(
+                        " ", transcript, height=300, key=f"transcript_area_{i}"
+                    )
+                    i += 1  # Increment i for unique key
+        except queue.Empty:
+            break
+
 
 def main():
-    """
-    Main function to run the Whisper Transcription app.
-    """
-    st.title("Whisper Transcription")
+    global recording, i  # Declare i as global
 
-    tab1, tab2 = st.tabs(["Record Audio", "Upload Audio"])
-    # Record Audio tab
-    with tab1:
-        audio_bytes = audio_recorder(pause_threshold=3.0,auto_start=True)
-        if audio_bytes:
-            st.audio(audio_bytes, format="audio/wav")
-            audio_path = save_audio_file(audio_bytes, "mp3")
-            #automatically transcribe
-            st.session_state.transcript_text = st.session_state.transcript_text + transcribe(audio_path)
-            st.text_area("Processed Output", st.session_state.transcript_text, height=300)
+    st.title("Near-Realtime Transcription with Gemini")
 
-    # Upload Audio tab
-    with tab2:
-        audio_file = st.file_uploader("Upload Audio", type=["mp3", "mp4", "wav", "m4a"])
-        if audio_file:
-            file_extension = audio_file.type.split('/')[1]
-            save_audio_file(audio_file.read(), file_extension)
-            audio_path = save_uploaded_file(audio_file)
-            st.audio(audio_path)
+    # Initialize session state for transcript
+    if "transcript_text" not in st.session_state:
+        st.session_state.transcript_text = ""
 
-    # Transcribe button action
-    if st.button("Transcribe"):
-        with st.spinner('Processing...'):
-            transcript_text = transcribe(audio_path)
-            st.text_area("Processed Output", transcript_text, height=300)
-        # Display the transcript
-        st.header("Transcript")
-        st.write(transcript_text)
+    webrtc_ctx = webrtc_streamer(
+        key="speech-to-text",
+        mode=WebRtcMode.SENDRECV,
+        audio_receiver_size=1024,
+        queued_audio_frames_callback=audio_callback,
+        rtc_configuration=RTC_CONFIGURATION,
+        media_stream_constraints={"video": False, "audio": True},
+    )
 
-        # Save the transcript to a text file
-        with open("transcript.txt", "w") as f:
-            f.write(transcript_text)
+    # Start/Stop recording button
+    if st.button("Start Recording"):
+        recording = True
+        st.session_state.transcript_text = ""
+        i = 0  # Reset i when starting recording
 
-        # Provide a download button for the transcript
-        st.download_button("Download Transcript", transcript_text)
+        # Start transcription worker thread
+        worker_thread = threading.Thread(target=transcribe_worker)
+        worker_thread.daemon = True
+        worker_thread.start()
 
+    if st.button("Stop Recording") and recording:
+        recording = False
+        audio_queue.put(None)
 
-if __name__ == "__main__":
-    # Set up the working directory
-    working_dir = os.path.dirname(os.path.abspath(__file__))
-    sys.path.append(working_dir)
-
-    # Run the main function
-    main()
+    # Display transcript
+    st.header("Transcript")
+    global transcript_output  # Make transcript_output accessible
+    transc
