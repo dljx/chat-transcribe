@@ -60,8 +60,8 @@ docker run -p 8501:8501 chat-transcribe
 ```
 Open your web browser and navigate to http://localhost:8501 to access the application.
 
-Limitations and Disclaimer
+### Limitations and Disclaimer
 This app is a demonstration of the potential of Google's Gemini Multimodal model for audio transcription. The accuracy of the transcriptions depends on various factors such as the quality of the audio file, the language spoken, and background noise and chunking size. The app is not intended for use in production environments and should be used for demonstration purposes only.
 
-Contributing
+### Contributing
 If you'd like to contribute to this project, please feel free to submit a pull request or create an issue for any bugs or feature requests. Your contributions are welcome and appreciated!
