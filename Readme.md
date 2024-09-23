@@ -48,14 +48,16 @@ Run the Streamlit app with the following command:
 ```bash
 streamlit run app.py 
 Open your web browser and navigate to http://localhost:8501 to access the application.
-
+```
 Docker Deployment
 Build the Docker image:
-
+```
 docker build -t chat-transcribe .
+```
 Run the Docker image:
-
-docker run -p 8501:8501 chat-transcribe 
+```
+docker run -p 8501:8501 chat-transcribe
+```
 Open your web browser and navigate to http://localhost:8501 to access the application.
 
 Limitations and Disclaimer
